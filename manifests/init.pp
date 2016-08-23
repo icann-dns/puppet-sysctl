@@ -22,16 +22,21 @@ define sysctl (
   $comment = undef,
   $content = undef,
   $source  = undef,
+  $enforce = true,
 ) {
 
   include '::sysctl::base'
 
   # If we have a prefix, then add the dash to it
   if $prefix {
-    $sysctl_d_file = "${prefix}-${title}${suffix}"
+    $_sysctl_d_file = "${prefix}-${title}${suffix}"
   } else {
-    $sysctl_d_file = "${title}${suffix}"
+    $_sysctl_d_file = "${title}${suffix}"
   }
+
+  # Some sysctl keys contain a slash, which is not valid in a filename.
+  # Most common at those on VLANs: net.ipv4.conf.eth0/1.arp_accept = 0
+  $sysctl_d_file = regsubst($_sysctl_d_file, '[/ ]', '_', 'G')
 
   # If we have an explicit content or source, use them
   if $content or $source {
@@ -62,7 +67,8 @@ define sysctl (
 
     # The immediate change + re-check on each run "just in case"
     exec { "sysctl-${title}":
-      command     => "/sbin/sysctl -p /etc/sysctl.d/${sysctl_d_file}",
+      command     => "sysctl -p /etc/sysctl.d/${sysctl_d_file}",
+      path        => [ '/usr/sbin', '/sbin', '/usr/bin', '/bin' ],
       refreshonly => true,
       require     => File["/etc/sysctl.d/${sysctl_d_file}"],
     }
@@ -73,6 +79,20 @@ define sysctl (
       path        => [ '/usr/sbin', '/sbin', '/usr/bin', '/bin' ],
       refreshonly => true,
       onlyif      => "grep -E '^${title} *=' /etc/sysctl.conf",
+    }
+
+    # Enforce configured value during each run (can't work with custom files)
+    if $enforce and ! ( $content or $source ) {
+      $qtitle = shellquote($title)
+      # Value may contain '|' and others, we need to quote to be safe
+      # Convert any numerical to expected string, 0 instead of '0' would fail
+      # lint:ignore:only_variable_string Convert numerical to string
+      $qvalue = shellquote("${value}")
+      # lint:endignore
+      exec { "enforce-sysctl-value-${qtitle}":
+          unless  => "/usr/bin/test \"$(/sbin/sysctl -n ${qtitle})\" = ${qvalue}",
+          command => "/sbin/sysctl -w ${qtitle}=${qvalue}",
+      }
     }
 
   } else {
